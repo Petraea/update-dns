@@ -1,0 +1,86 @@
+#!/usr/bin/python
+import sys, os, argparse
+import logging
+from subprocess import Popen, PIPE, STDOUT
+
+def nslookup(target):
+    p = Popen(['nslookup',target],stdout=PIPE,stderr=STDOUT)
+    data = filter(bool,p.communicate()[0].strip().split('\n'))
+    values={}
+    for line in data[2:]:
+        line = [q.strip(':') for q in filter(bool,line.split('\t'))]
+        if len(line) == 1:
+            line = [q.strip() for q in filter(bool,line[0].split(':'))]
+        if len(line)>1: #Remove comments and stuff
+            if line[0] in values:
+                if not isinstance(values[line[0]],list):
+                    values[line[0]] = [values[line[0]]]
+                values[line[0]].append(line[1])
+            else:
+                values[line[0]] = line[1]
+    if 'Name' in values:
+        return values
+    else: #Reverse DNS
+        for ptr in values:
+            ip = ptr.split('.')[:4]
+            ip.reverse()
+            ip = '.'.join(ip)
+            name = values[ptr].split(' ')[-1]
+            return {'Name':name.rstrip('.'),'Address':ip}
+
+def nsupdate(commands):
+    p = Popen(['nsupdate','-k',args.keyfile],stdin=PIPE,stdout=PIPE,stderr=STDOUT)
+    logging.warn(commands)
+    ret = p.communicate('\n'.join(commands))
+    logging.warn(ret[0])
+
+def do_update():
+    if not args.ip: raise ValueError('need an IP to update')
+    if not args.name: raise ValueError('need a name to update')
+    commands = ['server '+args.server]
+    commands.append('update delete '+args.name+'.'+args.zone)
+    commands.append('update add '+args.name+'.'+args.zone+' 3600 A '+args.ip)
+    commands.append('send')
+    nsupdate(commands)
+    ptr = args.ip.split('.')
+    ptr.reverse()
+    ptr = '.'.join(ptr)
+    commands = ['server '+args.server]
+    commands.append('update delete '+ptr+'.in-addr.arpa')
+    commands.append('update add '+ptr+'.in-addr.arpa 3600 PTR '+args.name+'.'+args.zone)
+    commands.append('send')
+    nsupdate(commands)
+
+def do_remove():
+    if not args.ip: raise ValueError('need an IP to update')
+    if not args.name:
+        args.name = nslookup(args.ip)['Name']
+    commands = ['server '+args.server]
+    commands.append('update delete '+args.name+'.'+args.zone)
+    commands.append('send')
+    nsupdate(commands)
+    ptr = args.ip.split('.')
+    ptr.reverse()
+    ptr = '.'.join(ptr)
+    commands = ['server '+args.server]
+    commands.append('update delete '+ptr+'.in-addr.arpa')
+    commands.append('send')
+    nsupdate(commands)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-u",help="Update DNS entry",action="store_true")
+    parser.add_argument("-r",help="Remove DNS entry",action="store_true")
+    parser.add_argument("-k","--keyfile",help="Path to the shared key file.",default="/etc/bind/rndc.key")
+    parser.add_argument("-n","--name",help="Host Name",default="")
+    parser.add_argument("-z","--zone",help="Zone Name",default=None)
+    parser.add_argument("-i","--ip",help="IP",default="")
+    parser.add_argument("-s","--server",help="Server IP",default='127.0.0.1')
+    args = parser.parse_args()
+
+    if args.u:
+       do_update()
+    elif args.r:
+       do_remove()
+    else:
+        parser.print_help()
